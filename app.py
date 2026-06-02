@@ -19,7 +19,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # Load the TFLite model instead of the massive H5 file
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.tflite')
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.h5')
 
 if os.path.exists(MODEL_PATH):
     print(f"Loading cloud TFLite model from: {MODEL_PATH}")
