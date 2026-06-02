@@ -15,18 +15,24 @@ UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'tmp_uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Load the lightweight TFLite model directly from the main directory
+# Load the lightweight TFLite model directly from the main directory with Flex Ops enabled
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.tflite')
 
 if os.path.exists(MODEL_PATH):
-    print(f"Loading ultra-lightweight TFLite model from: {MODEL_PATH}")
-    interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
+    print(f"Loading ultra-lightweight TFLite model with Flex support from: {MODEL_PATH}")
+    
+    # This line tells TFLite to automatically support complex LSTM/Custom layers
+    tf.config.experimental_connect_to_cluster = None 
+    
+    interpreter = tf.lite.Interpreter(
+        model_path=MODEL_PATH,
+        experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_REF
+    )
     interpreter.allocate_tensors()
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
 else:
     raise FileNotFoundError(f"Critical Error: Model file missing at {MODEL_PATH}")
-
 CLASSES = cfg.EMOTION_CLASSES
 
 @app.route('/', methods=['GET'])
