@@ -18,12 +18,16 @@ UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'tmp_uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Load the deployment model into memory once when the cloud server starts up
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'dog_emotion_model.h5')
+# Load the TFLite model instead of the massive H5 file
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'dog_emotion_model.tflite')
 
 if os.path.exists(MODEL_PATH):
-    print(f"Loading cloud deployment model from: {MODEL_PATH}")
-    model = tf.keras.models.load_model(MODEL_PATH, custom_objects={'loss_fn': focal_loss()})
+    print(f"Loading cloud TFLite model from: {MODEL_PATH}")
+    # Initialize TFLite Interpreter
+    interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
+    interpreter.allocate_tensors()
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
 else:
     raise FileNotFoundError(f"Critical Error: Model file missing at {MODEL_PATH}. Cannot start server.")
 
