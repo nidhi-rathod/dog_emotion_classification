@@ -1,8 +1,4 @@
-flask
-werkzeug
-numpy<2.0.0
+fastapi
+uvicorn
+numpy
 tensorflow-cpu
-librosa
-scikit-learn
-soundfile
-gunicorn
