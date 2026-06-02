@@ -1,96 +1,86 @@
+ython
 import os
 import sys
 import numpy as np
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+# Tighten TensorFlow memory allocations exactly like your working version
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
+
 import tensorflow as tf
-from flask import Flask, request, jsonify
-from werkzeug.utils import secure_filename
 
-sys.path.insert(0, os.path.dirname(__file__))
-import config as cfg
-from utils.features import extract_features
+tf.config.threading.set_inter_op_parallelism_threads(1)
+tf.config.threading.set_intra_op_parallelism_threads(1)
 
-app = Flask(__name__)
+app = FastAPI()
 
-UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'tmp_uploads')
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# Global TFLite operational states
+interpreter = None
+input_details = None
+output_details = None
 
-# Load the lightweight TFLite model directly from the main directory with Flex Ops enabled
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.tflite')
+# Point directly to your TFLite file
+MODEL_PATH = "dog_emotion_model.tflite"
 
-if os.path.exists(MODEL_PATH):
-    print(f"Loading ultra-lightweight TFLite model with Flex support from: {MODEL_PATH}")
-    
-    # This line tells TFLite to automatically support complex LSTM/Custom layers
-    tf.config.experimental_connect_to_cluster = None 
-    
-    interpreter = tf.lite.Interpreter(
-        model_path=MODEL_PATH,
-        experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_REF
-    )
-    interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-else:
-    raise FileNotFoundError(f"Critical Error: Model file missing at {MODEL_PATH}")
-CLASSES = cfg.EMOTION_CLASSES
+@app.on_event("startup")
+def load_tflite_model_background():
+    global interpreter, input_details, output_details
+    try:
+        print("🔄 Initializing lightweight TFLite engine into memory...")
+        if os.path.exists(MODEL_PATH):
+            # Load interpreter with builtin reference operations enabled for custom layer tracking
+            interpreter = tf.lite.Interpreter(
+                model_path=MODEL_PATH,
+                experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_REF
+            )
+            interpreter.allocate_tensors()
+            
+            # Map input/output tensor memory addresses
+            input_details = interpreter.get_input_details()
+            output_details = interpreter.get_output_details()
+            print("✅ TFLite Engine online and tensors allocated perfectly!")
+        else:
+            print(f"❌ Core load failed: Model file missing at {MODEL_PATH}")
+    except Exception as e:
+        print(f"❌ Core load failed: {e}")
 
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({
-        "status": "online",
-        "message": "Dog Emotion Classification API is running on TFLite!",
-        "supported_classes": CLASSES
-    }), 200
+class AudioFeatures(BaseModel):
+    features: list
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file stream found"}), 400
+@app.get("/")
+def read_root():
+    if interpreter is None:
+        return {"status": "Initializing", "message": "Backend online. TFLite engine loading."}
+    return {"status": "Dog Emotion TFLite API Engine is running"}
+
+@app.post("/predict")
+def predict_emotion(data: AudioFeatures):
+    if interpreter is None:
+        raise HTTPException(status_code=503, detail="TFLite Engine is still initializing.")
+    try:
+        # Convert incoming list into standard float32 array
+        input_data = np.array(data.features, dtype=np.float32)
         
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
-
-    if file:
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
+        # Match tensor dimensions to model expectations
+        if input_data.ndim == 3:
+            input_data = np.expand_dims(input_data, axis=0)
+        elif input_data.ndim == 2:
+            input_data = np.expand_dims(input_data, axis=(0, -1))
+            
+        # Run inference using your allocated TFLite runtime states
+        interpreter.set_tensor(input_details[0]['index'], input_data)
+        interpreter.invoke()
+        predictions = interpreter.get_tensor(output_details[0]['index'])
         
-        try:
-            # Extract features and format to float32 for TFLite compliance
-            features = extract_features(file_path).astype(np.float32)
-            features = features[np.newaxis, ..., np.newaxis] 
-            
-            # Run inference via TFLite Interpreter
-            interpreter.set_tensor(input_details[0]['index'], features)
-            interpreter.invoke()
-            preds = interpreter.get_tensor(output_details[0]['index'])
-            
-            confidence = float(np.max(preds))
-            predicted_idx = int(np.argmax(preds))
-            
-            if confidence < cfg.CONFIDENCE_THRESH:
-                prediction = "uncertain"
-            else:
-                prediction = CLASSES[predicted_idx]
-                
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                
-            return jsonify({
-                "success": True,
-                "prediction": prediction,
-                "confidence": round(confidence, 4),
-                "raw_probabilities": {CLASSES[i]: float(preds[0][i]) for i in range(len(CLASSES))}
-            }), 200
-            
-        except Exception as e:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            return jsonify({"success": False, "error": str(e)}), 500
-
-if __name__ == '__main__':
-    # Use the port environment variable assigned by Render
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+        emotion_idx = int(np.argmax(predictions[0]))
+        emotions = ["Angry", "Happy", "Sad", "Fearful", "Neutral"]
+        
+        return {
+            "emotion": emotions[emotion_idx],
+            "confidence": float(predictions[0][emotion_idx])
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
