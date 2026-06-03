@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 librosa
+scipy
 numpy
 tensorflow-cpu
