@@ -8,7 +8,7 @@ from werkzeug.utils import secure_filename
 # Ensure the app can find your local config and utils
 sys.path.insert(0, os.path.dirname(__file__))
 import config as cfg
-from utils.features import extract_features  # Using your actual sidebar util file!
+from utils.features import extract_features  # Matches your sidebar file path!
 
 app = Flask(__name__)
 
@@ -17,17 +17,19 @@ UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'tmp_uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Target your exact model path from the sidebar layout
+# Target your exact model location from the sidebar
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'dog_emotion_model.h5')
 
 EMOTIONS = ["Aggressive", "Fearful", "Happy", "Neutral", "Pain"]
 
-# Load your H5 model globally on startup
+# Global model variable
 model = None
+
+# Load your H5 model globally right on execution
 try:
     print("🔄 Loading Keras .h5 model from models folder...")
     if os.path.exists(MODEL_PATH):
-        # If you use a custom loss like focal_loss, we handle it here
+        # Handle custom loss functions automatically if present
         try:
             from utils.losses import focal_loss
             model = tf.keras.models.load_model(MODEL_PATH, custom_objects={'focal_loss': focal_loss})
@@ -45,13 +47,12 @@ def root():
         return jsonify({"status": "error", "message": "Model failed to load on server"}), 503
     return jsonify({"status": "Dog Emotion Flask API Engine is running smoothly"})
 
-# Change the endpoint to match the /predict route your team is using
 @app.route("/predict", methods=["POST"])
 def predict():
     if model is None:
         return jsonify({"detail": "Model is offline. Server running but .h5 file failed."}), 503
 
-    # Check if the file wrapper exists in the request
+    # Your hardware team needs this key to be exactly 'file'
     if 'file' not in request.files:
         return jsonify({"detail": "No file field found in the request payload. Label your key as 'file'."}), 400
 
@@ -65,21 +66,20 @@ def predict():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
 
-        # Extract features using your custom pipeline script from the sidebar
+        # Extract features using your sidebar custom pipeline script
         features = extract_features(filepath)
         
-        # Clean up the file after processing
+        # Clean up the audio file after extraction to save space
         if os.path.exists(filepath):
             os.remove(filepath)
 
         # Shape formatting to match what your specific H5 network structure expects
-        # Add batch dimension [1, features...]
         if len(features.shape) == 2:
             features = np.expand_dims(features, axis=0)
-        if len(features.shape) == 2: # If it needs a 4D shape like CNN [1, X, Y, 1]
+        if len(features.shape) == 2: 
             features = np.expand_dims(features, axis=-1)
 
-        # Run predictions using the standard Keras model syntax
+        # Run predictions using standard Keras syntax
         predictions = model.predict(features)[0]
         
         emotion_index = int(np.argmax(predictions))
