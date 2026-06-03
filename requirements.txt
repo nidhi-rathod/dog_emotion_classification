@@ -4,3 +4,4 @@ librosa
 scipy
 numpy
 tensorflow-cpu
+python-multipart
