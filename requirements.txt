@@ -1,0 +1,10 @@
+gunicorn
+flask
+werkzeug
+tensorflow-cpu
+librosa
+soundfile
+numpy
+scipy
+requests
+streamlit
