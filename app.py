@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.keras')
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.h5')
 
 model = None
 
