@@ -18,7 +18,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # Target your exact model location from the sidebar
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.h5')
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.keras')
 EMOTIONS = ["Aggressive", "Fearful", "Happy", "Neutral", "Pain"]
 
 # Global model variable
