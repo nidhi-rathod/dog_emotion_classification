@@ -3,6 +3,7 @@ import tempfile
 import numpy as np
 import librosa
 import tensorflow as tf
+from scipy.io import wavfile
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 
@@ -17,11 +18,11 @@ N_MFCC = 40
 MAX_PAD_LEN = 130
 
 EMOTIONS = [
-    "Angry",
-    "Happy",
-    "Sad",
-    "Fearful",
-    "Neutral"
+    "Angry",
+    "Happy",
+    "Sad",
+    "Fearful",
+    "Neutral"
 ]
 
 # ==========================================================
@@ -35,59 +36,58 @@ input_details = None
 output_details = None
 
 # ==========================================================
-# FEATURE EXTRACTION
+# FEATURE EXTRACTION (FREE TIER PURE-PYTHON BYPASS)
 # ==========================================================
 
 def extract_features_from_audio(audio_path):
-    y, sr = librosa.load(audio_path, sr=SAMPLE_RATE)
+    # Pure Python WAV reader - completely bypasses the need for libsndfile1 OS package!
+    sr, y = wavfile.read(audio_path)
+    
+    # Convert integer audio arrays to float32 (which librosa features expect)
+    y = y.astype(np.float32)
+    
+    # If the audio file is stereo (2 channels), downmix it to mono (1 channel)
+    if len(y.shape) > 1:
+        y = np.mean(y, axis=1)
+        
+    # Normalize volume amplitude to a -1.0 to 1.0 range
+    if np.max(np.abs(y)) > 0:
+        y = y / np.max(np.abs(y))
 
-    mfccs = librosa.feature.mfcc(
-        y=y,
-        sr=sr,
-        n_mfcc=N_MFCC
-    )
+    # Resample on the fly if the uploaded file isn't exactly 16000Hz
+    if sr != SAMPLE_RATE:
+        y = librosa.resample(y, orig_sr=sr, target_sr=SAMPLE_RATE)
+        sr = SAMPLE_RATE
 
-    delta = librosa.feature.delta(mfccs)
+    # Extract all the required features using librosa's mathematical processors
+    mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)
+    delta = librosa.feature.delta(mfccs)
+    delta2 = librosa.feature.delta(mfccs, order=2)
+    chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+    contrast = librosa.feature.spectral_contrast(y=y, sr=sr, n_bands=6)
+    rms = librosa.feature.rms(y=y)
 
-    delta2 = librosa.feature.delta(
-        mfccs,
-        order=2
-    )
+    features = np.vstack([
+        mfccs,
+        delta,
+        delta2,
+        chroma,
+        contrast,
+        rms
+    ])
 
-    chroma = librosa.feature.chroma_stft(
-        y=y,
-        sr=sr
-    )
+    T = features.shape[1]
 
-    contrast = librosa.feature.spectral_contrast(
-        y=y,
-        sr=sr,
-        n_bands=6
-    )
+    if T > MAX_PAD_LEN:
+        features = features[:, :MAX_PAD_LEN]
+    else:
+        features = np.pad(
+            features,
+            ((0, 0), (0, MAX_PAD_LEN - T)),
+            mode="constant"
+        )
 
-    rms = librosa.feature.rms(y=y)
-
-    features = np.vstack([
-        mfccs,
-        delta,
-        delta2,
-        chroma,
-        contrast,
-        rms
-    ])
-
-    T = features.shape[1]
-
-    if T > MAX_PAD_LEN:
-        features = features[:, :MAX_PAD_LEN]
-    else:
-        features = np.pad(
-            features,
-            ((0, 0), (0, MAX_PAD_LEN - T)),
-            mode="constant"
-        )
-
-    return features.astype(np.float32)
+    return features.astype(np.float32)
 
 # ==========================================================
 # STARTUP
@@ -95,30 +95,17 @@ def extract_features_from_audio(audio_path):
 
 @app.on_event("startup")
 def load_model():
-
-    global interpreter
-    global input_details
-    global output_details
-
-    try:
-        print("Loading TFLite model...")
-
-        interpreter = tf.lite.Interpreter(
-            model_path=MODEL_PATH
-        )
-
-        interpreter.allocate_tensors()
-
-        input_details = interpreter.get_input_details()
-        output_details = interpreter.get_output_details()
-
-        print("Model loaded successfully")
-
-        print("Input shape:",
-              input_details[0]["shape"])
-
-    except Exception as e:
-        print("Model loading failed:", str(e))
+    global interpreter, input_details, output_details
+    try:
+        print("Loading TFLite model...")
+        interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
+        interpreter.allocate_tensors()
+        input_details = interpreter.get_input_details()
+        output_details = interpreter.get_output_details()
+        print("Model loaded successfully")
+        print("Input shape:", input_details[0]["shape"])
+    except Exception as e:
+        print("Model loading failed:", str(e))
 
 # ==========================================================
 # HEALTH CHECK
@@ -126,15 +113,9 @@ def load_model():
 
 @app.get("/")
 def root():
-
-    if interpreter is None:
-        return {
-            "status": "initializing"
-        }
-
-    return {
-        "status": "Dog Emotion TFLite API Engine is running"
-    }
+    if interpreter is None:
+        return {"status": "initializing"}
+    return {"status": "Dog Emotion TFLite API Engine is running"}
 
 # ==========================================================
 # PREDICT
@@ -142,100 +123,46 @@ def root():
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    if interpreter is None:
+        raise HTTPException(status_code=503, detail="Model still loading")
 
-    if interpreter is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model still loading"
-        )
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            contents = await file.read()
+            tmp.write(contents)
+            temp_path = tmp.name
 
-    try:
+        features = extract_features_from_audio(temp_path)
+        os.remove(temp_path)
 
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=".wav"
-        ) as tmp:
+        features = np.expand_dims(features, axis=-1)
+        features = np.expand_dims(features, axis=0)
 
-            contents = await file.read()
-            tmp.write(contents)
-            temp_path = tmp.name
+        expected_shape = tuple(input_details[0]["shape"])
 
-        features = extract_features_from_audio(
-            temp_path
-        )
+        if tuple(features.shape) != expected_shape:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Shape mismatch. Expected {expected_shape}, Got {features.shape}"
+            )
 
-        os.remove(temp_path)
+        interpreter.set_tensor(input_details[0]["index"], features)
+        interpreter.invoke()
 
-        # (140,130)
-        features = np.expand_dims(
-            features,
-            axis=-1
-        )
+        predictions = interpreter.get_tensor(output_details[0]["index"])
+        predictions = predictions[0]
 
-        # (140,130,1)
+        emotion_index = int(np.argmax(predictions))
+        confidence = float(predictions[emotion_index])
 
-        features = np.expand_dims(
-            features,
-            axis=0
-        )
+        return {
+            "emotion": EMOTIONS[emotion_index],
+            "confidence": confidence
+        }
 
-        # (1,140,130,1)
-
-        expected_shape = tuple(
-            input_details[0]["shape"]
-        )
-
-        if tuple(features.shape) != expected_shape:
-
-            raise HTTPException(
-                status_code=500,
-                detail=f"Shape mismatch. "
-                       f"Expected {expected_shape}, "
-                       f"Got {features.shape}"
-            )
-
-        interpreter.set_tensor(
-            input_details[0]["index"],
-            features
-        )
-
-        interpreter.invoke()
-
-        predictions = interpreter.get_tensor(
-            output_details[0]["index"]
-        )
-
-        predictions = predictions[0]
-
-        emotion_index = int(
-            np.argmax(predictions)
-        )
-
-        confidence = float(
-            predictions[emotion_index]
-        )
-
-        return {
-            "emotion": EMOTIONS[emotion_index],
-            "confidence": confidence
-        }
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
-# ==========================================================
-# LOCAL RUN
-# ==========================================================
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=5000
-    )
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=5000)
