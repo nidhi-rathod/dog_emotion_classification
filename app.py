@@ -13,7 +13,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 
 MODEL_PATH = "dog_emotion_model.tflite"
 
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 22050
 N_MFCC = 40
 MAX_PAD_LEN = 130
 
