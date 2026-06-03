@@ -40,10 +40,15 @@ output_details = None
 # ==========================================================
 
 def extract_features_from_audio(audio_path):
-    # Pure Python WAV reader - completely bypasses the need for libsndfile1 OS package!
-    sr, y = wavfile.read(audio_path)
+    import soundfile as sf
     
-    # Convert integer audio arrays to float32 (which librosa features expect)
+    try:
+        # soundfile can read almost any type of .wav format perfectly!
+        y, sr = sf.read(audio_path)
+    except Exception as e:
+        raise ValueError(f"Could not parse WAV file format: {str(e)}")
+    
+    # Ensure data is converted to float32 arrays for librosa processing
     y = y.astype(np.float32)
     
     # If the audio file is stereo (2 channels), downmix it to mono (1 channel)
@@ -54,12 +59,12 @@ def extract_features_from_audio(audio_path):
     if np.max(np.abs(y)) > 0:
         y = y / np.max(np.abs(y))
 
-    # Resample on the fly if the uploaded file isn't exactly 16000Hz
+    # Resample on the fly if the uploaded file isn't exactly 22050Hz
     if sr != SAMPLE_RATE:
         y = librosa.resample(y, orig_sr=sr, target_sr=SAMPLE_RATE)
         sr = SAMPLE_RATE
 
-    # Extract all the required features using librosa's mathematical processors
+    # Extract features using librosa's mathematical processors
     mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)
     delta = librosa.feature.delta(mfccs)
     delta2 = librosa.feature.delta(mfccs, order=2)
@@ -67,15 +72,7 @@ def extract_features_from_audio(audio_path):
     contrast = librosa.feature.spectral_contrast(y=y, sr=sr, n_bands=6)
     rms = librosa.feature.rms(y=y)
 
-    features = np.vstack([
-        mfccs,
-        delta,
-        delta2,
-        chroma,
-        contrast,
-        rms
-    ])
-
+    features = np.vstack([mfccs, delta, delta2, chroma, contrast, rms])
     T = features.shape[1]
 
     if T > MAX_PAD_LEN:
