@@ -2,6 +2,7 @@ fastapi
 uvicorn
 librosa
 scipy
+soundfile
 numpy
 tensorflow-cpu
 python-multipart
