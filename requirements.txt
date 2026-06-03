@@ -1,6 +1,5 @@
 fastapi
 uvicorn
-paho-mqtt
 librosa
 scipy
 numpy
