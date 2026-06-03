@@ -1,124 +1,241 @@
-import os
-import sys
-import json
-import threading
+where do i run this code - import os
+import tempfile
 import numpy as np
-import paho.mqtt.client as mqtt
-from fastapi import FastAPI
-
-# Tighten TensorFlow memory allocations exactly like your working version
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OMP_NUM_THREADS"] = "1"
-
+import librosa
 import tensorflow as tf
 
-tf.config.threading.set_inter_op_parallelism_threads(1)
-tf.config.threading.set_intra_op_parallelism_threads(1)
+from fastapi import FastAPI, UploadFile, File, HTTPException
 
-# --- DUMMY WEB SERVER TO EXPLOIT THE FREE TIER ---
+# ==========================================================
+# SETTINGS
+# ==========================================================
+
+MODEL_PATH = "dog_emotion_model.tflite"
+
+SAMPLE_RATE = 16000
+N_MFCC = 40
+MAX_PAD_LEN = 130
+
+EMOTIONS = [
+    "Angry",
+    "Happy",
+    "Sad",
+    "Fearful",
+    "Neutral"
+]
+
+# ==========================================================
+# FASTAPI
+# ==========================================================
+
 app = FastAPI()
 
-@app.get("/")
-def free_tier_ping():
-    return {"status": "MQTT Backend is tricking Render into keeping us alive for free!"}
-
-# --- GLOBAL TFLITE STATES ---
 interpreter = None
 input_details = None
 output_details = None
-MODEL_PATH = "dog_emotion_model.tflite"
 
-# MQTT Configuration
-MQTT_BROKER = os.environ.get("MQTT_BROKER", "broker.hivemq.com")
-MQTT_PORT = int(os.environ.get("MQTT_PORT", 1883))
-MQTT_SUB_TOPIC = "dog/+/features"
+# ==========================================================
+# FEATURE EXTRACTION
+# ==========================================================
 
-def load_tflite_model():
-    global interpreter, input_details, output_details
-    try:
-        print("🔄 Initializing lightweight TFLite engine into memory...")
-        if os.path.exists(MODEL_PATH):
-            interpreter = tf.lite.Interpreter(
-                model_path=MODEL_PATH,
-                experimental_op_resolver_type=tf.lite.experimental.OpResolverType.BUILTIN_REF
-            )
-            interpreter.allocate_tensors()
-            input_details = interpreter.get_input_details()
-            output_details = interpreter.get_output_details()
-            print("✅ TFLite Engine online and tensors allocated perfectly!")
-            return True
-        print(f"❌ Core load failed: Model file missing at {MODEL_PATH}")
-        return False
-    except Exception as e:
-        print(f"❌ Core load failed: {e}")
-        return False
+def extract_features_from_audio(audio_path):
+    y, sr = librosa.load(audio_path, sr=SAMPLE_RATE)
 
-# --- MQTT CALLBACKS ---
-def on_connect(client, userdata, flags, rc, *args):
-    # Handles both old paho-mqtt integer return codes and new version objects
-    connection_code = rc if isinstance(rc, int) else rc.value
-    if connection_code == 0:
-        print(f"🌐 Connected successfully to MQTT Broker: {MQTT_BROKER}")
-        client.subscribe(MQTT_SUB_TOPIC)
-        print(f"📥 Listening for device data on topic: {MQTT_SUB_TOPIC}")
-    else:
-        print(f"❌ Connection failed with result code {connection_code}")
+    mfccs = librosa.feature.mfcc(
+        y=y,
+        sr=sr,
+        n_mfcc=N_MFCC
+    )
 
-def on_message(client, userdata, msg):
-    if interpreter is None:
-        return
-    try:
-        topic_parts = msg.topic.split('/')
-        device_id = topic_parts[1]
-        response_topic = f"dog/{device_id}/predictions"
+    delta = librosa.feature.delta(mfccs)
 
-        payload = json.loads(msg.payload.decode('utf-8'))
-        features_list = payload.get("features")
-        
-        if not features_list:
-            return
+    delta2 = librosa.feature.delta(
+        mfccs,
+        order=2
+    )
 
-        input_data = np.array(features_list, dtype=np.float32)
-        if input_data.ndim == 3:
-            input_data = np.expand_dims(input_data, axis=0)
-        elif input_data.ndim == 2:
-            input_data = np.expand_dims(input_data, axis=(0, -1))
-            
-        interpreter.set_tensor(input_details[0]['index'], input_data)
-        interpreter.invoke()
-        predictions = interpreter.get_tensor(output_details[0]['index'])
-        
-        emotion_idx = int(np.argmax(predictions[0]))
-        emotions = ["Angry", "Happy", "Sad", "Fearful", "Neutral"]
-        
-        result = {
-            "device_id": device_id,
-            "emotion": emotions[emotion_idx],
-            "confidence": round(float(predictions[0][emotion_idx]), 4)
-        }
-        
-        client.publish(response_topic, json.dumps(result))
-        print(f"🚀 Sent prediction to {response_topic}: {emotions[emotion_idx]}")
-    except Exception as e:
-        print(f"❌ MQTT processing error: {e}")
+    chroma = librosa.feature.chroma_stft(
+        y=y,
+        sr=sr
+    )
 
-def run_mqtt_loop():
-    """Runs the MQTT listener inside an isolated parallel execution thread."""
-    if load_tflite_model():
-        # Version-safe configuration for paho-mqtt (supports v1.x and v2.x)
-        try:
-            client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-        except AttributeError:
-            client = mqtt.Client() # Fallback for older library versions
-            
-        client.on_connect = on_connect
-        client.on_message = on_message
-        
-        print(f"🔄 Connecting to broker {MQTT_BROKER}...")
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.loop_forever()
+    contrast = librosa.feature.spectral_contrast(
+        y=y,
+        sr=sr,
+        n_bands=6
+    )
 
-# Automatically spin up the MQTT engine in the background when the file loads
-mqtt_thread = threading.Thread(target=run_mqtt_loop, daemon=True)
-mqtt_thread.start()
+    rms = librosa.feature.rms(y=y)
+
+    features = np.vstack([
+        mfccs,
+        delta,
+        delta2,
+        chroma,
+        contrast,
+        rms
+    ])
+
+    T = features.shape[1]
+
+    if T > MAX_PAD_LEN:
+        features = features[:, :MAX_PAD_LEN]
+    else:
+        features = np.pad(
+            features,
+            ((0, 0), (0, MAX_PAD_LEN - T)),
+            mode="constant"
+        )
+
+    return features.astype(np.float32)
+
+# ==========================================================
+# STARTUP
+# ==========================================================
+
+@app.on_event("startup")
+def load_model():
+
+    global interpreter
+    global input_details
+    global output_details
+
+    try:
+        print("Loading TFLite model...")
+
+        interpreter = tf.lite.Interpreter(
+            model_path=MODEL_PATH
+        )
+
+        interpreter.allocate_tensors()
+
+        input_details = interpreter.get_input_details()
+        output_details = interpreter.get_output_details()
+
+        print("Model loaded successfully")
+
+        print("Input shape:",
+              input_details[0]["shape"])
+
+    except Exception as e:
+        print("Model loading failed:", str(e))
+
+# ==========================================================
+# HEALTH CHECK
+# ==========================================================
+
+@app.get("/")
+def root():
+
+    if interpreter is None:
+        return {
+            "status": "initializing"
+        }
+
+    return {
+        "status": "Dog Emotion TFLite API Engine is running"
+    }
+
+# ==========================================================
+# PREDICT
+# ==========================================================
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+
+    if interpreter is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model still loading"
+        )
+
+    try:
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".wav"
+        ) as tmp:
+
+            contents = await file.read()
+            tmp.write(contents)
+            temp_path = tmp.name
+
+        features = extract_features_from_audio(
+            temp_path
+        )
+
+        os.remove(temp_path)
+
+        # (140,130)
+        features = np.expand_dims(
+            features,
+            axis=-1
+        )
+
+        # (140,130,1)
+
+        features = np.expand_dims(
+            features,
+            axis=0
+        )
+
+        # (1,140,130,1)
+
+        expected_shape = tuple(
+            input_details[0]["shape"]
+        )
+
+        if tuple(features.shape) != expected_shape:
+
+            raise HTTPException(
+                status_code=500,
+                detail=f"Shape mismatch. "
+                       f"Expected {expected_shape}, "
+                       f"Got {features.shape}"
+            )
+
+        interpreter.set_tensor(
+            input_details[0]["index"],
+            features
+        )
+
+        interpreter.invoke()
+
+        predictions = interpreter.get_tensor(
+            output_details[0]["index"]
+        )
+
+        predictions = predictions[0]
+
+        emotion_index = int(
+            np.argmax(predictions)
+        )
+
+        confidence = float(
+            predictions[emotion_index]
+        )
+
+        return {
+            "emotion": EMOTIONS[emotion_index],
+            "confidence": confidence
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+# ==========================================================
+# LOCAL RUN
+# ==========================================================
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=5000
+    )
