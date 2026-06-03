@@ -3,7 +3,7 @@ import tempfile
 import numpy as np
 import librosa
 import tensorflow as tf
-from scipy.io import wavfile
+import soundfile as sf
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 
@@ -40,8 +40,6 @@ output_details = None
 # ==========================================================
 
 def extract_features_from_audio(audio_path):
-    import soundfile as sf
-    
     try:
         # soundfile can read almost any type of .wav format perfectly!
         y, sr = sf.read(audio_path)
@@ -132,23 +130,37 @@ async def predict(file: UploadFile = File(...)):
         features = extract_features_from_audio(temp_path)
         os.remove(temp_path)
 
-        features = np.expand_dims(features, axis=-1)
-        features = np.expand_dims(features, axis=0)
-
+        # 1. READ TARGET MODEL SHAPE DYNAMICALLY
         expected_shape = tuple(input_details[0]["shape"])
+        print(f"📊 Audio Features Shape: {features.shape} | Expected Shape: {expected_shape}")
 
-        if tuple(features.shape) != expected_shape:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Shape mismatch. Expected {expected_shape}, Got {features.shape}"
-            )
+        # 2. MATCH INDICES ACCORDING TO MODEL EXPECTATIONS DYNAMICALLY
+        if len(expected_shape) == 4:
+            # For 4D convolutional shapes like [1, X, Y, 1]
+            if len(features.shape) == 2:
+                features = np.expand_dims(features, axis=-1)
+            features = np.expand_dims(features, axis=0)
+        elif len(expected_shape) == 3:
+            # For 3D recurrent/dense shapes like [1, X, Y]
+            if len(features.shape) == 2:
+                features = np.expand_dims(features, axis=0)
+        else:
+            # Universal fallback layout match
+            features = np.reshape(features, expected_shape)
 
+        features = features.astype(np.float32)
+
+        # 3. SET DATA PACKET INTO TFLITE MEMORY SLOT
         interpreter.set_tensor(input_details[0]["index"], features)
         interpreter.invoke()
 
-        predictions = interpreter.get_tensor(output_details[0]["index"])
-        predictions = predictions[0]
+        # 4. SAFELY CATCH OUTPUT ARRAY WITH FALLBACK CHECK
+        raw_output = interpreter.get_tensor(output_details[0]["index"])
+        
+        if raw_output is None:
+            raise ValueError("TensorFlow Engine returned NoneType instead of predictions. Check model compatibility.")
 
+        predictions = raw_output[0]
         emotion_index = int(np.argmax(predictions))
         confidence = float(predictions[emotion_index])
 
@@ -158,7 +170,15 @@ async def predict(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_details = traceback.format_exc()
+        print("====== BACKEND CRASH LOG ======")
+        print(error_details)
+        print("===============================")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Backend Error: {str(e)} | Context Trace: {error_details}"
+        )
 
 if __name__ == "__main__":
     import uvicorn
