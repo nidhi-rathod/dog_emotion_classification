@@ -1,164 +1,99 @@
 import os
-import tempfile
+import sys
 import numpy as np
-import librosa
 import tensorflow as tf
-import soundfile as sf
+from flask import Flask, request, jsonify
+from werkzeug.utils import secure_filename
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+# Ensure the app can find your local config and utils
+sys.path.insert(0, os.path.dirname(__file__))
+import config as cfg
+from utils.features import extract_features  # Using your actual sidebar util file!
 
-# ==========================================================
-# SETTINGS
-# ==========================================================
+app = Flask(__name__)
 
-MODEL_PATH = "dog_emotion_model.tflite"
+# Configure a temporary upload folder
+UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'tmp_uploads')
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-SAMPLE_RATE = 22050
-N_MFCC = 40
-MAX_PAD_LEN = 130
+# Target your exact model path from the sidebar layout
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'dog_emotion_model.h5')
 
-EMOTIONS = [
-    "Aggressive",
-    "Fearful",
-    "Happy",
-    "Neutral",
-    "Pain"
-]
+EMOTIONS = ["Aggressive", "Fearful", "Happy", "Neutral", "Pain"]
 
-# ==========================================================
-# FASTAPI & MODEL INITIALIZATION (FIXED COLD LOAD)
-# ==========================================================
-
-app = FastAPI()
-
-# Load the model globally right away - completely bypassing the broken startup event handler
+# Load your H5 model globally on startup
+model = None
 try:
-    print(" Loading TFLite model from disk...")
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Model file '{MODEL_PATH}' was not found in your repository directory!")
-        
-    interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
-    interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-    print(" Model loaded successfully into memory!")
-    print(" Target Input shape:", input_details[0]["shape"])
-except Exception as e:
-    print(f" CRITICAL ERROR: Model loading failed: {str(e)}")
-    interpreter = None
-    input_details = None
-    output_details = None
-
-# ==========================================================
-# FEATURE EXTRACTION
-# ==========================================================
-
-def extract_features_from_audio(audio_path):
-    try:
-        y, sr = sf.read(audio_path)
-    except Exception as e:
-        raise ValueError(f"Could not parse WAV file format: {str(e)}")
-    
-    y = y.astype(np.float32)
-    
-    if len(y.shape) > 1:
-        y = np.mean(y, axis=1)
-        
-    if np.max(np.abs(y)) > 0:
-        y = y / np.max(np.abs(y))
-
-    if sr != SAMPLE_RATE:
-        y = librosa.resample(y, orig_sr=sr, target_sr=SAMPLE_RATE)
-        sr = SAMPLE_RATE
-
-    mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)
-    delta = librosa.feature.delta(mfccs)
-    delta2 = librosa.feature.delta(mfccs, order=2)
-    chroma = librosa.feature.chroma_stft(y=y, sr=sr)
-    contrast = librosa.feature.spectral_contrast(y=y, sr=sr, n_bands=6)
-    rms = librosa.feature.rms(y=y)
-
-    features = np.vstack([mfccs, delta, delta2, chroma, contrast, rms])
-    T = features.shape[1]
-
-    if T > MAX_PAD_LEN:
-        features = features[:, :MAX_PAD_LEN]
+    print("🔄 Loading Keras .h5 model from models folder...")
+    if os.path.exists(MODEL_PATH):
+        # If you use a custom loss like focal_loss, we handle it here
+        try:
+            from utils.losses import focal_loss
+            model = tf.keras.models.load_model(MODEL_PATH, custom_objects={'focal_loss': focal_loss})
+        except Exception:
+            model = tf.keras.models.load_model(MODEL_PATH)
+        print("✅ Keras H5 Model loaded successfully!")
     else:
-        features = np.pad(
-            features,
-            ((0, 0), (0, MAX_PAD_LEN - T)),
-            mode="constant"
-        )
+        print(f"❌ ERROR: Model file not found at {MODEL_PATH}")
+except Exception as e:
+    print(f"❌ CRITICAL: Model initialization failed: {str(e)}")
 
-    return features.astype(np.float32)
-
-# ==========================================================
-# HEALTH CHECK
-# ==========================================================
-
-@app.get("/")
+@app.route("/", methods=["GET"])
 def root():
-    if interpreter is None:
-        return {"status": "error", "message": "Model engine failed to initialize on host server. Check logs."}
-    return {"status": "Dog Emotion TFLite API Engine is running smoothly"}
+    if model is None:
+        return jsonify({"status": "error", "message": "Model failed to load on server"}), 503
+    return jsonify({"status": "Dog Emotion Flask API Engine is running smoothly"})
 
-# ==========================================================
-# PREDICT
-# ==========================================================
+# Change the endpoint to match the /predict route your team is using
+@app.route("/predict", methods=["POST"])
+def predict():
+    if model is None:
+        return jsonify({"detail": "Model is offline. Server running but .h5 file failed."}), 503
 
-@app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    if interpreter is None or input_details is None:
-        raise HTTPException(
-            status_code=503, 
-            detail="Model is offline. The server started up but your .tflite file failed to initialize."
-        )
+    # Check if the file wrapper exists in the request
+    if 'file' not in request.files:
+        return jsonify({"detail": "No file field found in the request payload. Label your key as 'file'."}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"detail": "Empty filename transmitted."}), 400
 
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            contents = await file.read()
-            tmp.write(contents)
-            temp_path = tmp.name
+        # Save file to temporary directory
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
 
-        features = extract_features_from_audio(temp_path)
-        os.remove(temp_path)
+        # Extract features using your custom pipeline script from the sidebar
+        features = extract_features(filepath)
+        
+        # Clean up the file after processing
+        if os.path.exists(filepath):
+            os.remove(filepath)
 
-        expected_shape = tuple(input_details[0]["shape"])
-
-        if len(expected_shape) == 4:
-            if len(features.shape) == 2:
-                features = np.expand_dims(features, axis=-1)
+        # Shape formatting to match what your specific H5 network structure expects
+        # Add batch dimension [1, features...]
+        if len(features.shape) == 2:
             features = np.expand_dims(features, axis=0)
-        elif len(expected_shape) == 3:
-            if len(features.shape) == 2:
-                features = np.expand_dims(features, axis=0)
-        else:
-            features = np.reshape(features, expected_shape)
+        if len(features.shape) == 2: # If it needs a 4D shape like CNN [1, X, Y, 1]
+            features = np.expand_dims(features, axis=-1)
 
-        features = features.astype(np.float32)
-
-        interpreter.set_tensor(input_details[0]["index"], features)
-        interpreter.invoke()
-
-        raw_output = interpreter.get_tensor(output_details[0]["index"])
-        predictions = raw_output[0]
+        # Run predictions using the standard Keras model syntax
+        predictions = model.predict(features)[0]
         
         emotion_index = int(np.argmax(predictions))
         confidence = float(predictions[emotion_index])
 
-        return {
+        return jsonify({
             "emotion": EMOTIONS[emotion_index],
             "confidence": confidence
-        }
+        }), 200
 
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Backend Processing Error: {str(e)} | Trace: {error_details}"
-        )
+        return jsonify({"detail": f"Backend Error: {str(e)}", "trace": error_details}), 500
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000)
