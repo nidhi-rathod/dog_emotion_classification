@@ -18,11 +18,11 @@ N_MFCC = 40
 MAX_PAD_LEN = 130
 
 EMOTIONS = [
-    "Angry",
-    "Happy",
-    "Sad",
+    "Aggressive",
     "Fearful",
-    "Neutral"
+    "Happy",
+    "Neutral",
+    "Pain"
 ]
 
 # ==========================================================
