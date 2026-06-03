@@ -1,8 +1,10 @@
-fastapi
-uvicorn
+gunicorn
+flask
+werkzeug
+tensorflow-cpu
 librosa
-scipy
 soundfile
 numpy
-tensorflow-cpu
-python-multipart
+scipy
+requests
+streamlit
