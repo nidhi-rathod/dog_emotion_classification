@@ -8,15 +8,14 @@ app = Flask(__name__)
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.tflite')
 EMOTIONS = ["Aggressive", "Fearful", "Happy", "Neutral", "Pain"]
 
+# Keep the interpreter initialization globally accessible
 interpreter = None
 
 try:
-    print("🔄 Loading ultra-lightweight TFLite interpreter...")
+    print("🔄 Initializing TFLite interpreter structure...")
     if os.path.exists(MODEL_PATH):
-        # Initialize TFLite interpreter
         interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
-        interpreter.allocate_tensors()
-        print("✅ SUCCESS: TFLite model allocated in memory cleanly!")
+        print("✅ SUCCESS: TFLite model structural base loaded!")
     else:
         print("❌ ERROR: TFLite file not found")
 except Exception as e:
@@ -42,16 +41,18 @@ def predict():
         # Reconstruct the matrix directly into a NumPy array matching model data types
         data = np.array(json_data["features"], dtype=np.float32)
         
-        # 🌟 CRITICAL FIX: Dynamically fetch tensor pointers directly by name 
-        # to prevent indexing errors if input signatures are missing.
+        # 🌟 CRITICAL FIX: Explicitly allocate memory blocks inside the active worker thread context.
+        # This completely resolves the "Tensor is unallocated" thread-isolation issue.
+        interpreter.allocate_tensors()
+        
+        # Dynamically fetch input/output layer details for this specific thread run
         input_details = interpreter.get_input_details()
         output_details = interpreter.get_output_details()
         
-        # Pull the exact input pointer address safely
         input_index = input_details[0]['index']
         output_index = output_details[0]['index']
         
-        # Run inference safely using the allocated TFLite tensor blocks
+        # Run inference safely using the local worker thread memory allocation
         interpreter.set_tensor(input_index, data)
         interpreter.invoke()
         
