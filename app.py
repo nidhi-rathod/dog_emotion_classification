@@ -29,10 +29,20 @@ except Exception as e:
     print(f" TF ERROR: {str(e)}")
 
 def extract_features_authentic(file_path_str):
-    """Your authentic extraction stack matching the training notebook exactly."""
+    """Your authentic extraction stack made completely crash-proof for short/empty files."""
     try:
         # Load audio using the sample rate from your config
         y, sr = librosa.load(file_path_str, sr=SAMPLE_RATE)
+        
+        # CRITICAL FIX: If the audio is completely empty, prevent a crash
+        if len(y) == 0:
+            print(" ERROR: Audio file is completely empty.")
+            return None
+            
+        # CRITICAL FIX: If the audio is too short for spectral_contrast (under 2048 samples), 
+        # pad it with silence first so librosa doesn't throw a 500 internal error.
+        if len(y) < 2048:
+            y = np.pad(y, (0, 2048 - len(y)), mode='constant')
         
         # Feature extraction stack
         mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)
