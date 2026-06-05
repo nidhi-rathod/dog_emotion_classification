@@ -9,19 +9,13 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.tflite')
 EMOTIONS = ["Aggressive", "Fearful", "Happy", "Neutral", "Pain"]
 
 interpreter = None
-input_details = None
-output_details = None
 
 try:
     print("🔄 Loading ultra-lightweight TFLite interpreter...")
     if os.path.exists(MODEL_PATH):
-        # Initialize TFLite interpreter which uses 90% less RAM than full Keras
+        # Initialize TFLite interpreter
         interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
         interpreter.allocate_tensors()
-        
-        # Track memory block layout shapes
-        input_details = interpreter.get_input_details()
-        output_details = interpreter.get_output_details()
         print("✅ SUCCESS: TFLite model allocated in memory cleanly!")
     else:
         print("❌ ERROR: TFLite file not found")
@@ -48,11 +42,20 @@ def predict():
         # Reconstruct the matrix directly into a NumPy array matching model data types
         data = np.array(json_data["features"], dtype=np.float32)
         
-        # Run inference using the allocated TFLite tensor blocks
-        interpreter.set_tensor(input_details[0]['index'], data)
+        # 🌟 CRITICAL FIX: Dynamically fetch tensor pointers directly by name 
+        # to prevent indexing errors if input signatures are missing.
+        input_details = interpreter.get_input_details()
+        output_details = interpreter.get_output_details()
+        
+        # Pull the exact input pointer address safely
+        input_index = input_details[0]['index']
+        output_index = output_details[0]['index']
+        
+        # Run inference safely using the allocated TFLite tensor blocks
+        interpreter.set_tensor(input_index, data)
         interpreter.invoke()
         
-        predictions = interpreter.get_tensor(output_details[0]['index'])
+        predictions = interpreter.get_tensor(output_index)
         max_idx = np.argmax(predictions[0])
         
         return jsonify({
