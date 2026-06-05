@@ -5,30 +5,38 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.h5')
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.tflite')
 EMOTIONS = ["Aggressive", "Fearful", "Happy", "Neutral", "Pain"]
 
-model = None
+interpreter = None
+input_details = None
+output_details = None
 
 try:
-    print("🔄 Initializing structural model bypass...")
+    print("🔄 Loading ultra-lightweight TFLite interpreter...")
     if os.path.exists(MODEL_PATH):
-        model = tf.keras.models.load_model(MODEL_PATH, compile=False, safe_mode=False)
-        print("✅ SUCCESS: Model loaded into memory perfectly!")
+        # Initialize TFLite interpreter which uses 90% less RAM than full Keras
+        interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
+        interpreter.allocate_tensors()
+        
+        # Track memory block layout shapes
+        input_details = interpreter.get_input_details()
+        output_details = interpreter.get_output_details()
+        print("✅ SUCCESS: TFLite model allocated in memory cleanly!")
     else:
-        print("❌ ERROR: Weight file not found")
+        print("❌ ERROR: TFLite file not found")
 except Exception as e:
-    print(f"❌ TF ERROR: {str(e)}")
+    print(f"❌ TFLITE LOADING ERROR: {str(e)}")
 
 @app.route("/", methods=["GET"])
 def root():
-    if model is None:
-        return jsonify({"status": "offline", "detail": "Model variable is None"}), 503
-    return jsonify({"status": "online", "detail": "Lightweight endpoint is live and stable!"})
+    if interpreter is None:
+        return jsonify({"status": "offline", "detail": "Interpreter variable is None"}), 503
+    return jsonify({"status": "online", "detail": "TFLite inference server is live and stable!"})
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    if model is None:
+    if interpreter is None:
         return jsonify({"error": "Model is offline"}), 503
         
     try:
@@ -37,11 +45,14 @@ def predict():
         if not json_data or "features" not in json_data:
             return jsonify({"error": "Missing 'features' key in payload JSON"}), 400
             
-        # Reconstruct the matrix directly into a NumPy array
+        # Reconstruct the matrix directly into a NumPy array matching model data types
         data = np.array(json_data["features"], dtype=np.float32)
         
-        # Execute the model evaluation safely
-        predictions = model.predict(data)
+        # Run inference using the allocated TFLite tensor blocks
+        interpreter.set_tensor(input_details[0]['index'], data)
+        interpreter.invoke()
+        
+        predictions = interpreter.get_tensor(output_details[0]['index'])
         max_idx = np.argmax(predictions[0])
         
         return jsonify({
@@ -49,7 +60,7 @@ def predict():
             "confidence": float(predictions[0][max_idx])
         })
     except Exception as e:
-        return jsonify({"error": f"Prediction evaluation failure: {str(e)}"}), 500
+        return jsonify({"error": f"TFLite evaluation failure: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
