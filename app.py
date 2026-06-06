@@ -1,70 +1,63 @@
 import os
 import numpy as np
-import tensorflow as tf
+import joblib
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_model.tflite')
-EMOTIONS = ["Aggressive", "Fearful", "Happy", "Neutral", "Pain"]
+# Target the tabular XGBoost model and the encoder inside your root directory
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_xgb.joblib')
+ENCODER_PATH = os.path.join(os.path.dirname(__file__), 'label_encoder.joblib')
 
-# Keep the interpreter initialization globally accessible
-interpreter = None
+model = None
+le = None
 
 try:
-    print("🔄 Initializing TFLite interpreter structure...")
-    if os.path.exists(MODEL_PATH):
-        interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
-        print("✅ SUCCESS: TFLite model structural base loaded!")
+    print("🔄 Loading lightweight tabular XGBoost engine...")
+    if os.path.exists(MODEL_PATH) and os.path.exists(ENCODER_PATH):
+        model = joblib.load(MODEL_PATH)
+        le = joblib.load(ENCODER_PATH)
+        print("✅ SUCCESS: Tabular server is live and completely stable!")
     else:
-        print("❌ ERROR: TFLite file not found")
+        print(f"❌ ERROR: Model or Encoder files missing from repository. Looking for:\n - {MODEL_PATH}\n - {ENCODER_PATH}")
 except Exception as e:
-    print(f"❌ TFLITE LOADING ERROR: {str(e)}")
+    print(f"❌ CRITICAL LOAD ERROR: {str(e)}")
 
 @app.route("/", methods=["GET"])
 def root():
-    if interpreter is None:
-        return jsonify({"status": "offline", "detail": "Interpreter variable is None"}), 503
-    return jsonify({"status": "online", "detail": "TFLite inference server is live and stable!"})
+    if model is None or le is None:
+        return jsonify({"status": "offline", "detail": "Model or Encoder failed to load on boot"}), 503
+    return jsonify({"status": "online", "detail": "XGBoost audio prediction endpoint is active!"})
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    if interpreter is None:
-        return jsonify({"error": "Model is offline"}), 503
+    if model is None or le is None:
+        return jsonify({"error": "Model offline"}), 503
         
     try:
-        # Accept the pre-extracted matrix payload from the local machine
         json_data = request.get_json(force=True)
         if not json_data or "features" not in json_data:
-            return jsonify({"error": "Missing 'features' key in payload JSON"}), 400
+            return jsonify({"error": "Missing 'features' data matrix array in payload"}), 400
             
-        # Reconstruct the matrix directly into a NumPy array matching model data types
-        data = np.array(json_data["features"], dtype=np.float32)
+        # Accept the flat list of 140 numbers and shape it into a single 2D row (1, 140)
+        features = np.array(json_data["features"], dtype=np.float32).reshape(1, -1)
         
-        # 🌟 CRITICAL FIX: Explicitly allocate memory blocks inside the active worker thread context.
-        # This completely resolves the "Tensor is unallocated" thread-isolation issue.
-        interpreter.allocate_tensors()
+        # Predict class index using XGBoost
+        pred_idx = int(model.predict(features)[0])
         
-        # Dynamically fetch input/output layer details for this specific thread run
-        input_details = interpreter.get_input_details()
-        output_details = interpreter.get_output_details()
+        # Decode index back into the true clean emotion string ("happy", "aggressive", etc.)
+        detected_emotion = le.inverse_transform([pred_idx])[0]
         
-        input_index = input_details[0]['index']
-        output_index = output_details[0]['index']
-        
-        # Run inference safely using the local worker thread memory allocation
-        interpreter.set_tensor(input_index, data)
-        interpreter.invoke()
-        
-        predictions = interpreter.get_tensor(output_index)
-        max_idx = np.argmax(predictions[0])
+        # Extract probability matrix score
+        probabilities = model.predict_proba(features)[0]
+        confidence = float(probabilities[pred_idx])
         
         return jsonify({
-            "emotion": EMOTIONS[max_idx],
-            "confidence": float(predictions[0][max_idx])
+            "emotion": detected_emotion,
+            "confidence": confidence
         })
     except Exception as e:
-        return jsonify({"error": f"TFLite evaluation failure: {str(e)}"}), 500
+        return jsonify({"error": f"Tabular evaluation failure: {str(e)}"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
