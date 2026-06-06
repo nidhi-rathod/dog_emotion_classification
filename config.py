@@ -39,13 +39,7 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 # =========================
 # EMOTION CLASSES
 # =========================
-EMOTION_CLASSES = [
-    "aggressive",
-    "fearful",
-    "happy",
-    "neutral",
-    "pain"
-]
+EMOTION_CLASSES   = ["aggressive", "fearful", "happy", "neutral", "pain"]
 
 # =========================
 # BREED CLASSES
