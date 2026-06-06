@@ -1,10 +1,7 @@
 gunicorn
 flask
 werkzeug
-tensorflow-cpu
-librosa
-soundfile
 numpy
-scipy
-requests
-streamlit
+scikit-learn
+xgboost
+joblib
