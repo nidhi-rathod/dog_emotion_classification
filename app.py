@@ -1,63 +1,56 @@
 import os
-import numpy as np
 import joblib
+import numpy as np
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Target the tabular XGBoost model and the encoder inside your root directory
+# Load the lightweight models cleanly from the root directory
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'dog_emotion_xgb.joblib')
 ENCODER_PATH = os.path.join(os.path.dirname(__file__), 'label_encoder.joblib')
 
 model = None
-le = None
+label_encoder = None
 
 try:
-    print("🔄 Loading lightweight tabular XGBoost engine...")
     if os.path.exists(MODEL_PATH) and os.path.exists(ENCODER_PATH):
         model = joblib.load(MODEL_PATH)
-        le = joblib.load(ENCODER_PATH)
-        print("✅ SUCCESS: Tabular server is live and completely stable!")
+        label_encoder = joblib.load(ENCODER_PATH)
+        print("🏆 Winner XGBoost model and encoder loaded successfully!")
     else:
-        print(f"❌ ERROR: Model or Encoder files missing from repository. Looking for:\n - {MODEL_PATH}\n - {ENCODER_PATH}")
+        print("❌ ERROR: Joblib files are missing from the directory.")
 except Exception as e:
-    print(f"❌ CRITICAL LOAD ERROR: {str(e)}")
+    print(f"💥 Critical Initialization Error: {e}")
 
-@app.route("/", methods=["GET"])
-def root():
-    if model is None or le is None:
-        return jsonify({"status": "offline", "detail": "Model or Encoder failed to load on boot"}), 503
-    return jsonify({"status": "online", "detail": "XGBoost audio prediction endpoint is active!"})
-
-@app.route("/predict", methods=["POST"])
+@app.route('/predict', methods=['POST'])
 def predict():
-    if model is None or le is None:
-        return jsonify({"error": "Model offline"}), 503
-        
-    try:
-        json_data = request.get_json(force=True)
-        if not json_data or "features" not in json_data:
-            return jsonify({"error": "Missing 'features' data matrix array in payload"}), 400
-            
-        # Accept the flat list of 140 numbers and shape it into a single 2D row (1, 140)
-        features = np.array(json_data["features"], dtype=np.float32).reshape(1, -1)
-        
-        # Predict class index using XGBoost
-        pred_idx = int(model.predict(features)[0])
-        
-        # Decode index back into the true clean emotion string ("happy", "aggressive", etc.)
-        detected_emotion = le.inverse_transform([pred_idx])[0]
-        
-        # Extract probability matrix score
-        probabilities = model.predict_proba(features)[0]
-        confidence = float(probabilities[pred_idx])
-        
-        return jsonify({
-            "emotion": detected_emotion,
-            "confidence": confidence
-        })
-    except Exception as e:
-        return jsonify({"error": f"Tabular evaluation failure: {str(e)}"}), 500
+    if model is None or label_encoder is None:
+        return jsonify({"error": "Model is not initialized on the server"}), 500
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    try:
+        data = request.get_json()
+        if not data or 'features' Bone not in data:
+            return jsonify({"error": "Missing 'features' key in JSON payload"}), 400
+
+        # Convert incoming JSON list back to a 1D or 2D NumPy array row
+        features = np.array(data['features'], dtype=np.float32).reshape(1, -1)
+
+        # 🌟 CRITICAL FIX FOR THE ACCURACY PROBABILITY PERCENTAGE:
+        # Use predict_proba to get clean bounded distributions between 0.0 and 1.0!
+        probabilities = model.predict_proba(features)[0]
+        pred_idx = np.argmax(probabilities)
+        confidence = float(probabilities[pred_idx])
+
+        # Get the human-readable emotion string back from the encoder mapping
+        emotion_string = label_encoder.inverse_transform([pred_idx])[0]
+
+        return jsonify({
+            "emotion": str(emotion_string),
+            "confidence": confidence
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": f"Internal prediction failure: {str(e)}"}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
